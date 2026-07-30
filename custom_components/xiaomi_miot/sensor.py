@@ -1,10 +1,13 @@
 """Support for Xiaomi sensors."""
+import asyncio
 import logging
 import time
 import json
 from typing import cast
 from datetime import datetime, timedelta
 from functools import cmp_to_key, cached_property
+
+import requests
 
 from homeassistant.const import STATE_UNKNOWN
 from homeassistant.components.sensor import (
@@ -39,6 +42,48 @@ _LOGGER = logging.getLogger(__name__)
 DATA_KEY = f'{ENTITY_DOMAIN}.{DOMAIN}'
 
 SERVICE_TO_METHOD = {}
+XIAOAI_CONVERSATION_ATTEMPTS = 2
+XIAOAI_CONVERSATION_RETRY_DELAY = 1
+
+
+def _decode_xiaoai_conversation_data(value):
+    """Normalize the Mina conversation payload to an object."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, (str, bytes, bytearray)):
+        raise TypeError(
+            f'XiaoAI conversation data must be an object or JSON object, '
+            f'got {type(value).__name__}'
+        )
+
+    decoded = json.loads(value)
+    if decoded is None:
+        return {}
+    if not isinstance(decoded, dict):
+        raise TypeError(
+            f'XiaoAI conversation JSON must decode to an object, '
+            f'got {type(decoded).__name__}'
+        )
+    return decoded
+
+
+async def _request_xiaoai_conversation(mic, api, data, cookies):
+    """Retry one transient Mina timeout before surfacing the failure."""
+    for attempt in range(XIAOAI_CONVERSATION_ATTEMPTS):
+        try:
+            return await mic.async_request_api(
+                api,
+                data=data,
+                method='GET',
+                cookies=cookies,
+                raise_timeout=True,
+            )
+        except (asyncio.TimeoutError, requests.exceptions.Timeout):
+            if attempt + 1 >= XIAOAI_CONVERSATION_ATTEMPTS:
+                raise
+            await asyncio.sleep(XIAOAI_CONVERSATION_RETRY_DELAY)
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -596,11 +641,29 @@ class XiaoaiConversationSensor(MiCoordinatorEntity, BaseSensorSubEntity):
             'deviceId': aid,
         }
         try:
-            res = await mic.async_request_api(api, data=dat, method='GET', cookies=cks) or {}
-            rdt = res.get('data', {})
-            if not isinstance(rdt, dict):
-                rdt = json.loads(rdt) or {}
-        except (TypeError, ValueError, Exception) as exc:
+            res = await _request_xiaoai_conversation(mic, api, dat, cks) or {}
+            if not isinstance(res, dict):
+                raise TypeError(
+                    f'XiaoAI conversation response must be an object, '
+                    f'got {type(res).__name__}'
+                )
+            rdt = _decode_xiaoai_conversation_data(res.get('data'))
+        except (asyncio.TimeoutError, requests.exceptions.Timeout) as exc:
+            rdt = {}
+            _LOGGER.warning(
+                '%s: XiaoAI conversation request timed out after %s attempts: %s',
+                self.name_model,
+                XIAOAI_CONVERSATION_ATTEMPTS,
+                [aid, type(exc).__name__],
+            )
+        except (TypeError, ValueError) as exc:
+            rdt = {}
+            _LOGGER.warning(
+                '%s: Invalid XiaoAI conversation response: %s',
+                self.name_model,
+                [aid, exc],
+            )
+        except Exception as exc:
             rdt = {}
             _LOGGER.warning(
                 '%s: Got exception while fetch xiaoai conversation: %s',
