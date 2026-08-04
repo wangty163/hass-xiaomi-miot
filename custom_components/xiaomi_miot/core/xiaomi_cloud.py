@@ -134,8 +134,12 @@ class MiotCloud(micloud.MiCloud):
     async def async_set_props(self, params=None):
         return await self.async_request_miot_spec('prop/set', params, timeout=5, raise_timeout=True)
 
-    async def async_do_action(self, params=None):
-        return await self.async_request_miot_spec('action', params)
+    async def async_do_action(self, params=None, *, sensitive=False):
+        return await self.async_request_miot_spec(
+            'action',
+            params,
+            debug=not sensitive,
+        )
 
     async def async_request_miot_spec(self, api, params=None, **kwargs):
         resp = await self.async_request_api('miotspec/' + api, {

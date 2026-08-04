@@ -1144,7 +1144,10 @@ class Device(CustomConfigHelper):
             if self.miio2miot and self.miio2miot.has_setter(siid, aiid=aiid):
                 result = await self.miio2miot.async_call_action(self.local, siid, aiid, params)
             elif cloud:
-                result = await cloud.async_do_action(pms)
+                result = await cloud.async_do_action(
+                    pms,
+                    sensitive=kwargs.get('sensitive', False),
+                )
             else:
                 if not kwargs.get('force_params'):
                     action = kwargs.get('action')

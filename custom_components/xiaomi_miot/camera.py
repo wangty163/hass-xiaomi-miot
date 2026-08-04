@@ -1,4 +1,5 @@
 """Support for Xiaomi cameras."""
+import asyncio
 import logging
 import json
 import time
@@ -12,6 +13,7 @@ from functools import partial
 from urllib.parse import urlencode
 from datetime import datetime, timedelta
 
+from aiohttp import ClientError
 from homeassistant.const import STATE_IDLE
 from homeassistant.core import HomeAssistant
 from homeassistant.components.camera import (
@@ -21,7 +23,10 @@ from homeassistant.components.camera import (
 )
 from homeassistant.components.ffmpeg import async_get_image, DATA_FFMPEG
 from homeassistant.helpers.event import async_track_point_in_utc_time
-from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_stream
+from homeassistant.helpers.aiohttp_client import (
+    async_aiohttp_proxy_stream,
+    async_get_clientsession,
+)
 from haffmpeg.camera import CameraMjpeg
 
 from . import (
@@ -354,10 +359,17 @@ class CameraEntity(XEntity, BaseCameraEntity):
             self._attr_is_streaming = False
             return None
 
-        video_attribute = self.custom_config_integer('video_attribute')
         video_property = self._srv_stream.get_property('video_attribute')
-        if video_attribute is None and video_property and video_property.value_list:
-            video_attribute = (video_property.value_list[0] or {}).get('value')
+        video_attributes = []
+        if preferred := self.custom_config_integer('video_attribute'):
+            video_attributes.append(preferred)
+        if video_property:
+            for item in video_property.value_list:
+                value = (item or {}).get('value')
+                if value is not None and value not in video_attributes:
+                    video_attributes.append(value)
+        if not video_attributes:
+            video_attributes.append(None)
 
         if self._act_stop_stream:
             await self.async_call_action(
@@ -365,34 +377,63 @@ class CameraEntity(XEntity, BaseCameraEntity):
                 cloud=True,
                 sensitive=True,
             )
-        params = [] if video_attribute is None else [video_attribute]
-        result = await self.async_call_action(
-            self._act_start_stream,
-            params,
-            cloud=True,
-            sensitive=True,
-        )
-        result_data = result.to_json() if hasattr(result, 'to_json') else result
-        if (
-            not isinstance(result_data, dict)
-            or not getattr(result, 'is_success', False)
-        ):
-            self.log.warning(
-                '%s: Unable to start direct camera stream: code=%s, error=%s',
-                self.entity_id,
-                result_data.get('code') if isinstance(result_data, dict) else None,
-                result_data.get('error') if isinstance(result_data, dict) else None,
-            )
-            self._attr_is_streaming = False
-            return None
+            await asyncio.sleep(0.25)
 
-        output = self._act_start_stream.out_results(result_data.get('out')) or {}
-        self._last_url = self._prop_stream_address.from_dict(output)
-        if not self._last_url:
-            self.log.warning(
-                '%s: Direct camera stream action returned no address',
-                self.entity_id,
+        output = None
+        for index, video_attribute in enumerate(video_attributes):
+            params = [] if video_attribute is None else [video_attribute]
+            result = await self.async_call_action(
+                self._act_start_stream,
+                params,
+                cloud=True,
+                sensitive=True,
             )
+            result_data = result.to_json() if hasattr(result, 'to_json') else result
+            if (
+                not isinstance(result_data, dict)
+                or not getattr(result, 'is_success', False)
+            ):
+                self.log.warning(
+                    '%s: Unable to start direct camera stream: code=%s, error=%s',
+                    self.entity_id,
+                    result_data.get('code') if isinstance(result_data, dict) else None,
+                    result_data.get('error') if isinstance(result_data, dict) else None,
+                )
+                self._attr_is_streaming = False
+                return None
+
+            candidate_output = self._act_start_stream.out_results(
+                result_data.get('out')
+            ) or {}
+            candidate_url = self._prop_stream_address.from_dict(candidate_output)
+            if not candidate_url:
+                self.log.warning(
+                    '%s: Direct camera stream action returned no address',
+                    self.entity_id,
+                )
+                self._attr_is_streaming = False
+                return None
+            if (
+                self._act_start_stream.name != 'start_hls_stream'
+                or await self._async_stream_address_ready(candidate_url)
+            ):
+                self._last_url = candidate_url
+                output = candidate_output
+                break
+            self.log.info(
+                '%s: Camera HLS profile %s is not ready',
+                self.entity_id,
+                video_attribute,
+            )
+            if self._act_stop_stream and index < len(video_attributes) - 1:
+                await self.async_call_action(
+                    self._act_stop_stream,
+                    cloud=True,
+                    sensitive=True,
+                )
+                await asyncio.sleep(0.25)
+
+        if not self._last_url:
             self._attr_is_streaming = False
             return None
 
@@ -405,6 +446,21 @@ class CameraEntity(XEntity, BaseCameraEntity):
         self._url_expiration = expiration - 10 if expiration > now else now + 60 * 4.5
         self._attr_is_streaming = True
         return self._last_url
+
+    async def _async_stream_address_ready(self, url):
+        session = async_get_clientsession(self.hass)
+        for attempt in range(2):
+            try:
+                response = await session.get(url, timeout=1)
+                async with response:
+                    prefix = await response.content.read(32)
+                    if response.status == 200 and prefix.lstrip().startswith(b'#EXTM3U'):
+                        return True
+            except (asyncio.TimeoutError, ClientError, OSError):
+                pass
+            if attempt < 1:
+                await asyncio.sleep(0.25)
+        return False
 
     def update_motion_video(self, data: dict):
         tim = data.get('motion_video_time')

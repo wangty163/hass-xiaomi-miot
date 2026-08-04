@@ -1,6 +1,6 @@
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from homeassistant.components.camera import CameraEntityFeature
@@ -39,14 +39,22 @@ async def test_converter_camera_uses_direct_hls_stream(
     ])
     device.cloud = SimpleNamespace(async_do_action=cloud_action)
     caplog.set_level(logging.DEBUG)
+    entity._async_stream_address_ready = AsyncMock(return_value=True)
 
     assert entity.supported_features & CameraEntityFeature.STREAM
     assert entity._srv_stream.name == "camera_stream_for_google_home"
 
-    assert await entity.stream_source() == stream_url
+    with patch("custom_components.xiaomi_miot.camera.asyncio.sleep", AsyncMock()):
+        assert await entity.stream_source() == stream_url
     assert cloud_action.await_args_list == [
-        call({"did": device.did, "siid": 7, "aiid": 2, "in": []}),
-        call({"did": device.did, "siid": 7, "aiid": 1, "in": [3]}),
+        call(
+            {"did": device.did, "siid": 7, "aiid": 2, "in": []},
+            sensitive=True,
+        ),
+        call(
+            {"did": device.did, "siid": 7, "aiid": 1, "in": [1]},
+            sensitive=True,
+        ),
     ]
 
     assert await entity.stream_source() == stream_url
@@ -90,7 +98,8 @@ async def test_converter_camera_handles_direct_stream_action_failure(
     ])
     device.cloud = object()
 
-    assert await entity.stream_source() is None
+    with patch("custom_components.xiaomi_miot.camera.asyncio.sleep", AsyncMock()):
+        assert await entity.stream_source() is None
     assert entity.is_streaming is False
     assert "stream_address" not in entity.extra_state_attributes
 
@@ -110,3 +119,40 @@ async def test_converter_camera_never_falls_back_to_local_live_action(
 
     assert await entity.stream_source() is None
     device.async_call_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_converter_camera_retries_hls_profiles_until_playlist_is_ready(
+    make_device,
+    load_miot_spec,
+):
+    device, entity = camera_entity(
+        make_device,
+        load_miot_spec,
+        "chuangmi.camera.021a04.json",
+        "chuangmi.camera.021a04",
+    )
+    first_url = "https://camera.example.test/live/profile-1.m3u8"
+    second_url = "https://camera.example.test/live/profile-2.m3u8"
+    device.cloud = object()
+    device.async_call_action = AsyncMock(side_effect=[
+        MiotResult({"code": 0}),
+        MiotResult({"code": 0, "out": [first_url]}),
+        MiotResult({"code": 0}),
+        MiotResult({"code": 0, "out": [second_url]}),
+    ])
+    entity._async_stream_address_ready = AsyncMock(side_effect=[False, True])
+
+    with patch("custom_components.xiaomi_miot.camera.asyncio.sleep", AsyncMock()):
+        assert await entity.stream_source() == second_url
+
+    assert entity._async_stream_address_ready.await_args_list == [
+        call(first_url),
+        call(second_url),
+    ]
+    assert device.async_call_action.await_args_list == [
+        call(7, 2, None, cloud=True, sensitive=True),
+        call(7, 1, [1], cloud=True, sensitive=True),
+        call(7, 2, None, cloud=True, sensitive=True),
+        call(7, 1, [2], cloud=True, sensitive=True),
+    ]
