@@ -1,0 +1,38 @@
+{
+  "type": "urn:miot-spec-v2:device:camera:0000A01C:chuangmi-p2p-only:1",
+  "description": "Camera",
+  "services": [
+    {
+      "iid": 2,
+      "type": "urn:miot-spec-v2:service:camera-control:0000784A:chuangmi-p2p-only:1",
+      "description": "Camera Control",
+      "properties": [
+        {
+          "iid": 1,
+          "type": "urn:miot-spec-v2:property:on:00000006:chuangmi-p2p-only:1",
+          "description": "Switch Status",
+          "format": "bool",
+          "access": ["read", "write", "notify"]
+        }
+      ],
+      "actions": [],
+      "events": []
+    },
+    {
+      "iid": 3,
+      "type": "urn:miot-spec-v2:service:p2p-stream:00007810:chuangmi-p2p-only:1",
+      "description": "P2P Stream",
+      "properties": [],
+      "actions": [
+        {
+          "iid": 1,
+          "type": "urn:miot-spec-v2:action:start-p2p-stream:00002809:chuangmi-p2p-only:1",
+          "description": "Start P2P Stream",
+          "in": [],
+          "out": []
+        }
+      ],
+      "events": []
+    }
+  ]
+}

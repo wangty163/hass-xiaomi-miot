@@ -279,11 +279,43 @@ class CameraEntity(XEntity, BaseCameraEntity):
     _attr_camera_image = None
     _attr_stream_source = None
     _last_motion_time = None
+    _srv_stream = None
+    _act_start_stream = None
+    _act_stop_stream = None
+    _prop_stream_address = None
+    _prop_expiration_time = None
 
     def on_init(self):
         BaseCameraEntity.__init__(self, self.hass)
         self._attr_brand = self.device_info.get('manufacturer')
         self._attr_model = self.device_info.get('model')
+        self._last_url = None
+        self._url_expiration = 0
+        self._init_direct_stream()
+
+    def _init_direct_stream(self):
+        services = [
+            'camera_stream_for_google_home',
+            'camera_stream_for_amazon_alexa',
+        ]
+        if self.custom_config_bool('use_rtsp_stream'):
+            services.reverse()
+        for service_name in services:
+            service = self.device.spec.get_service(service_name)
+            if not service:
+                continue
+            action = service.get_action('start_hls_stream', 'start_rtsp_stream')
+            stream_address = service.get_property('stream_address')
+            if not (action and stream_address):
+                continue
+            self._srv_stream = service
+            self._act_start_stream = action
+            self._act_stop_stream = service.get_action('stop_stream')
+            self._prop_stream_address = stream_address
+            self._prop_expiration_time = service.get_property('expiration_time')
+            self._supported_features |= CameraEntityFeature.STREAM
+            self._attr_supported_features |= CameraEntityFeature.STREAM
+            break
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -302,8 +334,77 @@ class CameraEntity(XEntity, BaseCameraEntity):
     async def image_source(self):
         return self._attr_camera_image
 
-    async def stream_source(self):
+    async def stream_source(self, **kwargs):
+        if self._act_start_stream:
+            return await self.async_get_stream_address()
         return self._attr_stream_source
+
+    async def async_get_stream_address(self):
+        now = time.time()
+        if now >= self._url_expiration:
+            self._last_url = None
+        if self._last_url:
+            self._attr_is_streaming = True
+            return self._last_url
+        if not self.device.cloud:
+            self.log.warning(
+                '%s: Xiaomi cloud is unavailable for direct camera stream',
+                self.entity_id,
+            )
+            self._attr_is_streaming = False
+            return None
+
+        video_attribute = self.custom_config_integer('video_attribute')
+        video_property = self._srv_stream.get_property('video_attribute')
+        if video_attribute is None and video_property and video_property.value_list:
+            video_attribute = (video_property.value_list[0] or {}).get('value')
+
+        if self._act_stop_stream:
+            await self.async_call_action(
+                self._act_stop_stream,
+                cloud=True,
+                sensitive=True,
+            )
+        params = [] if video_attribute is None else [video_attribute]
+        result = await self.async_call_action(
+            self._act_start_stream,
+            params,
+            cloud=True,
+            sensitive=True,
+        )
+        result_data = result.to_json() if hasattr(result, 'to_json') else result
+        if (
+            not isinstance(result_data, dict)
+            or not getattr(result, 'is_success', False)
+        ):
+            self.log.warning(
+                '%s: Unable to start direct camera stream: code=%s, error=%s',
+                self.entity_id,
+                result_data.get('code') if isinstance(result_data, dict) else None,
+                result_data.get('error') if isinstance(result_data, dict) else None,
+            )
+            self._attr_is_streaming = False
+            return None
+
+        output = self._act_start_stream.out_results(result_data.get('out')) or {}
+        self._last_url = self._prop_stream_address.from_dict(output)
+        if not self._last_url:
+            self.log.warning(
+                '%s: Direct camera stream action returned no address',
+                self.entity_id,
+            )
+            self._attr_is_streaming = False
+            return None
+
+        expiration = 0
+        if self._prop_expiration_time:
+            try:
+                expiration = int(self._prop_expiration_time.from_dict(output) or 0) / 1000
+            except (TypeError, ValueError):
+                expiration = 0
+        self._url_expiration = expiration - 10 if expiration > now else now + 60 * 4.5
+        self._attr_is_streaming = True
+        return self._last_url
 
     def update_motion_video(self, data: dict):
         tim = data.get('motion_video_time')
