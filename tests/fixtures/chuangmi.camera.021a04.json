@@ -31,7 +31,8 @@
           "access": ["write"],
           "value-list": [
             {"value": 1, "description": "Smooth"},
-            {"value": 2, "description": "High"}
+            {"value": 2, "description": "High"},
+            {"value": 3, "description": "Compatible"}
           ]
         },
         {
@@ -80,7 +81,8 @@
           "access": ["write"],
           "value-list": [
             {"value": 1, "description": "Smooth"},
-            {"value": 2, "description": "High"}
+            {"value": 2, "description": "High"},
+            {"value": 3, "description": "Compatible"}
           ]
         },
         {

@@ -46,7 +46,7 @@ async def test_converter_camera_uses_direct_hls_stream(
     assert await entity.stream_source() == stream_url
     assert cloud_action.await_args_list == [
         call({"did": device.did, "siid": 7, "aiid": 2, "in": []}),
-        call({"did": device.did, "siid": 7, "aiid": 1, "in": [1]}),
+        call({"did": device.did, "siid": 7, "aiid": 1, "in": [3]}),
     ]
 
     assert await entity.stream_source() == stream_url
