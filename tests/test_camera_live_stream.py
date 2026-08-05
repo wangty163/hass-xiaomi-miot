@@ -82,6 +82,30 @@ async def test_converter_camera_does_not_claim_p2p_as_ha_stream(
 
 
 @pytest.mark.asyncio
+async def test_converter_camera_uses_configured_external_live_stream(
+    make_device,
+    load_miot_spec,
+):
+    stream_url = "rtsp://127.0.0.1:8554/living_camera"
+
+    def custom_config(_entity, key=None, default=None):
+        return {"live_stream_source": stream_url}.get(key, default)
+
+    with patch.object(CameraEntity, "custom_config", custom_config):
+        _, entity = camera_entity(
+            make_device,
+            load_miot_spec,
+            "chuangmi.camera.p2p-only.json",
+            "chuangmi.camera.p2p-only",
+        )
+
+    assert entity.supported_features & CameraEntityFeature.STREAM
+    assert await entity.stream_source() == stream_url
+    assert entity.is_streaming is True
+    assert stream_url not in entity.extra_state_attributes.values()
+
+
+@pytest.mark.asyncio
 async def test_converter_camera_handles_direct_stream_action_failure(
     make_device,
     load_miot_spec,

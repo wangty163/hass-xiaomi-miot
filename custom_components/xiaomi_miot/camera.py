@@ -289,6 +289,7 @@ class CameraEntity(XEntity, BaseCameraEntity):
     _act_stop_stream = None
     _prop_stream_address = None
     _prop_expiration_time = None
+    _external_live_stream_source = None
 
     def on_init(self):
         BaseCameraEntity.__init__(self, self.hass)
@@ -296,6 +297,11 @@ class CameraEntity(XEntity, BaseCameraEntity):
         self._attr_model = self.device_info.get('model')
         self._last_url = None
         self._url_expiration = 0
+        external_source = self.custom_config('live_stream_source')
+        if isinstance(external_source, str) and external_source:
+            self._external_live_stream_source = external_source
+            self._supported_features |= CameraEntityFeature.STREAM
+            self._attr_supported_features |= CameraEntityFeature.STREAM
         self._init_direct_stream()
 
     def _init_direct_stream(self):
@@ -340,6 +346,9 @@ class CameraEntity(XEntity, BaseCameraEntity):
         return self._attr_camera_image
 
     async def stream_source(self, **kwargs):
+        if self._external_live_stream_source:
+            self._attr_is_streaming = True
+            return self._external_live_stream_source
         if self._act_start_stream:
             return await self.async_get_stream_address()
         return self._attr_stream_source
