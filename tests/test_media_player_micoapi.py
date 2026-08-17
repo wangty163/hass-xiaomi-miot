@@ -2,25 +2,22 @@
 import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock, Mock, PropertyMock, patch
+from unittest.mock import AsyncMock
 
 from homeassistant.components.media_player import MediaPlayerState
-
-homekit_module = ModuleType("homeassistant.components.homekit")
-homekit_module.__path__ = []
-homekit_const_module = ModuleType("homeassistant.components.homekit.const")
-homekit_const_module.EVENT_HOMEKIT_TV_REMOTE_KEY_PRESSED = (
-    "homekit_tv_remote_key_pressed"
-)
-sys.modules.setdefault("homeassistant.components.homekit", homekit_module)
-sys.modules.setdefault(
-    "homeassistant.components.homekit.const",
-    homekit_const_module,
-)
 
 from custom_components.xiaomi_miot import DOMAIN, init_integration_data
 from custom_components.xiaomi_miot.core.hass_entry import HassEntry
 from custom_components.xiaomi_miot.core.xiaomi_cloud import CloudSid
+
+# media_player imports one HomeKit event constant. The test does not exercise
+# HomeKit, so avoid installing and initializing the whole optional integration.
+homekit_const = ModuleType("homeassistant.components.homekit.const")
+homekit_const.EVENT_HOMEKIT_TV_REMOTE_KEY_PRESSED = (
+    "homekit_tv_remote_key_pressed"
+)
+sys.modules.setdefault("homeassistant.components.homekit.const", homekit_const)
+
 from custom_components.xiaomi_miot.media_player import MiotMediaPlayerEntity
 
 
@@ -104,37 +101,61 @@ async def test_owner_failure_leaves_xiaoai_cloud_none(hass):
     assert ent.xiaoai_cloud is None
 
 
-def test_resolved_xiaoai_uses_micoapi_state_without_miot_fallback():
-    """A resolved speaker never exposes its known-stale MIoT state."""
-    ent = object.__new__(MiotMediaPlayerEntity)
-    ent.xiaoai_device = {"deviceID": "fake-speaker"}
-    ent._attr_state = MediaPlayerState.PAUSED
+class _FakeLogger:
+    """No-op logger for unbound player-status tests."""
 
-    assert MiotMediaPlayerEntity.state.fget(ent) == MediaPlayerState.PAUSED
+    def info(self, *_args, **_kwargs):
+        pass
 
-    ent._attr_state = None
-    assert MiotMediaPlayerEntity.state.fget(ent) is None
+    def warning(self, *_args, **_kwargs):
+        pass
 
 
-async def test_failed_micoapi_refresh_clears_previous_player_state():
-    """A failed refresh cannot preserve a previous successful cloud result."""
-    ent = object.__new__(MiotMediaPlayerEntity)
-    ent.xiaoai_device = {"deviceID": "fake-speaker"}
-    ent._attr_state = MediaPlayerState.PLAYING
-    ent._vars = {}
-    ent.update_attrs = Mock()
-    ent.logger = Mock()
-    ent.xiaoai_cloud = SimpleNamespace(
-        async_request_api=AsyncMock(return_value={})
-    )
+class _FakePlayStatusEntity:
+    """Small surface used by the real async_update_play_status method."""
 
-    with patch.object(
-        MiotMediaPlayerEntity,
-        "name_model",
-        new_callable=PropertyMock,
-        return_value="Fake Speaker",
-    ):
-        await ent.async_update_play_status()
+    def __init__(self, cloud_result):
+        self.xiaoai_id = "xiaoai-device"
+        self.xiaoai_cloud = SimpleNamespace(
+            async_request_api=AsyncMock(return_value=cloud_result)
+        )
+        self._attr_state = MediaPlayerState.PLAYING
+        self._attr_media_duration = None
+        self._attr_media_position = None
+        self._vars = {}
+        self.logger = _FakeLogger()
+        self.name_model = "Fake Speaker"
 
-    assert ent._attr_state is None
-    assert MiotMediaPlayerEntity.state.fget(ent) is None
+    @property
+    def state(self):
+        return self._attr_state
+
+    def update_attrs(self, *_args, **_kwargs):
+        pass
+
+
+async def test_empty_micoapi_status_clears_previous_player_state():
+    """A failed or empty cloud refresh cannot preserve stale playback state."""
+    entity = _FakePlayStatusEntity({})
+
+    await MiotMediaPlayerEntity.async_update_play_status(entity)
+
+    assert entity._attr_state is None
+
+
+async def test_micoapi_status_sets_current_player_state():
+    """A successful cloud refresh still maps the current XiaoAI status."""
+    entity = _FakePlayStatusEntity({"data": {"info": {"status": 2}}})
+
+    await MiotMediaPlayerEntity.async_update_play_status(entity)
+
+    assert entity._attr_state is MediaPlayerState.PAUSED
+
+
+def test_resolved_xiaoai_device_does_not_fall_back_to_stale_miot_state():
+    """Resolved XiaoAI devices expose unknown when MICOAPI has no state."""
+    entity = object.__new__(MiotMediaPlayerEntity)
+    entity.xiaoai_device = {"deviceID": "xiaoai-device"}
+    entity._attr_state = None
+
+    assert entity.state is None
