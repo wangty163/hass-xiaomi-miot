@@ -351,6 +351,16 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
             return None
         return self.xiaoai_device.get('deviceID')
 
+    @property
+    def state(self):
+        # XiaoAI's MICOAPI reports the real player state, while some speaker
+        # firmwares expose a readable but permanently stale MIoT state.  Once
+        # a XiaoAI device has been resolved, prefer the result of
+        # player_get_play_status and report unknown when that query fails.
+        if self.xiaoai_device:
+            return self._attr_state
+        return super().state
+
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
         self.xiaoai_cloud = None
@@ -412,6 +422,9 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
         if not (aid := self.xiaoai_id):
             return
         self.update_attrs({'xiaoai_id': aid})
+        # Never let a previous successful cloud response masquerade as the
+        # current device state when this refresh fails or omits status.
+        self._attr_state = None
         api = 'https://api2.mina.mi.com/remote/ubus'
         dat = {
             'deviceId': aid,
