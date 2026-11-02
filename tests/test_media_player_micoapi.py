@@ -2,13 +2,13 @@
 import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from homeassistant.components.media_player import MediaPlayerState
 
 from custom_components.xiaomi_miot import DOMAIN, init_integration_data
 from custom_components.xiaomi_miot.core.hass_entry import HassEntry
-from custom_components.xiaomi_miot.core.xiaomi_cloud import CloudSid
+from custom_components.xiaomi_miot.core.xiaomi_cloud import CloudSid, MiotCloud
 
 # media_player imports one HomeKit event constant. The test does not exercise
 # HomeKit, so avoid installing and initializing the whole optional integration.
@@ -99,6 +99,21 @@ async def test_owner_failure_leaves_xiaoai_cloud_none(hass):
     ent = _FakeEntity(hass)
     await ent.async_added_to_hass()
     assert ent.xiaoai_cloud is None
+
+
+async def test_device_lookup_recovers_after_initial_account_unavailability():
+    cloud = Mock(spec=MiotCloud)
+    cloud.async_request_api = AsyncMock(return_value={
+        "code": 0, "data": [{"miotDID": "fixture", "deviceID": "speaker"}],
+    })
+    owner = SimpleNamespace(async_get_cloud=AsyncMock(side_effect=[None, cloud]))
+    entity = SimpleNamespace(xiaoai_cloud=None, xiaoai_device=None, miot_did="fixture",
+        device=SimpleNamespace(entry=owner, info=SimpleNamespace(mac="fixture-mac")))
+    assert await MiotMediaPlayerEntity.async_update_xiaoai_device(entity) is None
+    assert await MiotMediaPlayerEntity.async_update_xiaoai_device(entity) == {
+        "miotDID": "fixture", "deviceID": "speaker",
+    }
+    assert owner.async_get_cloud.await_count == 2
 
 
 class _FakeLogger:

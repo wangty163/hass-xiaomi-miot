@@ -640,6 +640,7 @@ class XiaoaiConversationSensor(MiCoordinatorEntity, BaseSensorSubEntity):
         cks = {
             'deviceId': aid,
         }
+        from .core.micoapi import MicoApiError
         try:
             res = await _request_xiaoai_conversation(mic, api, dat, cks) or {}
             if not isinstance(res, dict):
@@ -648,6 +649,12 @@ class XiaoaiConversationSensor(MiCoordinatorEntity, BaseSensorSubEntity):
                     f'got {type(res).__name__}'
                 )
             rdt = _decode_xiaoai_conversation_data(res.get('data'))
+            self._available = True
+        except MicoApiError:
+            # Account recovery is owned by the shared client. Keep it visible
+            # as unavailable, without treating a normal refresh as a code crash.
+            self._available = False
+            return {}
         except (asyncio.TimeoutError, requests.exceptions.Timeout) as exc:
             rdt = {}
             _LOGGER.warning(

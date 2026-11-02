@@ -9,6 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import SUPPORTED_DOMAINS
 from .xiaomi_cloud import REAUTH_SIDS, CloudSid, MiotCloud
+from .micoapi import MicoApiClient, MicoApiError
 
 if TYPE_CHECKING:
     from .device import Device
@@ -30,6 +31,7 @@ class HassEntry:
         self.did_to_unique = {}
         self.clouds: dict[CloudSid, Optional[MiotCloud]] = {}
         self._cloud_lock = asyncio.Lock()
+        self.micoapi = MicoApiClient(self)
 
     @staticmethod
     def init(hass: HomeAssistant, entry: ConfigEntry):
@@ -49,6 +51,7 @@ class HassEntry:
             )
         )
         if ret:
+            await self.micoapi.close()
             for device in self.devices.values():
                 await device.async_unload()
             self.clouds.clear()
@@ -133,6 +136,12 @@ class HassEntry:
             return None
         if isinstance(sid, str):
             sid = CloudSid(sid)
+        if sid == CloudSid.MICOAPI:
+            try:
+                return await self.micoapi.ready()
+            except MicoApiError:
+                # Temporary failure must not become a permanently cached None.
+                return None
         if sid in self.clouds:
             return self.clouds[sid]
         async with self._cloud_lock:
@@ -143,14 +152,6 @@ class HassEntry:
                 self.hass, config, login=login, hass_entry=self,
             )
             self.clouds[sid] = cloud
-            if sid == CloudSid.MICOAPI:
-                try:
-                    ok = await cloud.async_check_micoapi_auth()
-                except Exception:
-                    ok = None
-                if not ok:
-                    self.clouds[sid] = None
-                    cloud = None
             return self.clouds[sid]
 
     async def async_change_sid(self, sid):
@@ -172,7 +173,7 @@ class HassEntry:
         start_reauth = getattr(self.entry, 'async_start_reauth', None)
         if start_reauth is None:
             return
-        await start_reauth(self.hass, data={'sid': sid.value})
+        start_reauth(self.hass, data={'sid': sid.value})
 
     async def get_cloud_devices(self):
         if isinstance(self.cloud_devices, dict):

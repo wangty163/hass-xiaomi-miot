@@ -401,7 +401,9 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
 
     async def async_update_xiaoai_device(self):
         if not isinstance(self.xiaoai_cloud, MiotCloud):
-            return self.xiaoai_device
+            self.xiaoai_cloud = await self.device.entry.async_get_cloud(CloudSid.MICOAPI)
+            if not isinstance(self.xiaoai_cloud, MiotCloud):
+                return self.xiaoai_device
         api = 'https://api2.mina.mi.com/admin/v2/device_list'
         dat = {
           'presence': False,

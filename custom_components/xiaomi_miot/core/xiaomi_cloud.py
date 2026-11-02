@@ -304,9 +304,19 @@ class MiotCloud(micloud.MiCloud):
                 payload = await resp.json()
             except Exception:
                 return None
-            if isinstance(payload, dict) and ('result' in payload or 'code' in payload):
+            if not isinstance(payload, dict):
+                return None
+            code = payload.get('code')
+            if type(code) is int and code == 0:
                 return True
-            return None
+            if 'code' not in payload and isinstance(payload.get('result'), list):
+                return True
+            if type(code) is not int or code not in (2, 3):
+                return None
+            self.service_token = None
+            self.ssecurity = None
+            self.async_session = None
+            return await _typed_login_via_attempt()
 
         if resp.status != 401:
             return None
@@ -332,6 +342,13 @@ class MiotCloud(micloud.MiCloud):
         return False
 
     async def async_request_api(self, api, data, method='POST', crypt=True, debug=True, **kwargs):
+        if self.sid == CloudSid.MICOAPI and self.hass_entry is not None:
+            from .micoapi import is_read_request
+            return await self.hass_entry.micoapi.request(
+                api, data, method, read_only=is_read_request(api, data, method),
+                timeout=kwargs.get('timeout', self.http_timeout),
+                cookies=kwargs.get('cookies'),
+            )
         if not self.service_token:
             await self.async_login()
 
@@ -564,8 +581,8 @@ class MiotCloud(micloud.MiCloud):
                 return True
         return False
 
-    async def async_login_attempt(self, login_data=None):
-        if self.login_times > 5:
+    async def async_login_attempt(self, login_data=None, *, persist=True):
+        if persist and self.login_times > 5:
             await self.async_stored_auth(remove=True)
         if self.login_times > 10:
             raise MiCloudException(
@@ -575,7 +592,8 @@ class MiotCloud(micloud.MiCloud):
         self.login_times += 1
         ret = await self.hass.async_add_executor_job(self._login_request, login_data)
         if ret:
-            await self.async_stored_auth(save=True)
+            if persist:
+                await self.async_stored_auth(save=True)
             self.login_times = 0
         return ret
 
@@ -793,7 +811,7 @@ class MiotCloud(micloud.MiCloud):
         raise MiCloudAuthenticationError('Xiaomi login step3 missing service token')
 
     def _get_captcha(self, url):
-        response = self.session.get(url)
+        response = self.session.get(url, timeout=self.http_timeout)
         if ick := response.cookies.get('ick'):
             self.attrs['captchaIck'] = ick
             self.attrs['captchaImg'] = base64.b64encode(response.content).decode()
@@ -864,6 +882,7 @@ class MiotCloud(micloud.MiCloud):
             **kwargs.get('cookies', {}),
         }
         kwargs.setdefault('headers', {'User-Agent': self.useragent})
+        kwargs.setdefault('timeout', self.http_timeout)
         response = kwargs.pop('response', None)
         resp = self.session.request(method, url, **kwargs)
         try:

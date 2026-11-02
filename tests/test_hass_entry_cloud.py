@@ -60,37 +60,20 @@ async def test_concurrent_get_cloud_xiaomiio_only_creates_once(entry, hass):
     assert a is b
 
 
-async def test_get_cloud_micoapi_runs_single_probe(entry, hass):
-    fake = SimpleNamespace(sid="micoapi", async_check_micoapi_auth=AsyncMock(return_value=True))
-    fake.hass_entry = entry
-
-    async def _from_token(hass, cfg, login=None, **kw):
-        return fake
-
-    with patch("custom_components.xiaomi_miot.core.hass_entry.MiotCloud.from_token", _from_token):
-        cloud = await entry.async_get_cloud(CloudSid.MICOAPI)
-    assert cloud is fake
-    fake.async_check_micoapi_auth.assert_awaited_once()
+async def test_get_cloud_micoapi_uses_account_client(entry, hass):
+    fake = SimpleNamespace(sid="micoapi")
+    entry.micoapi.ready = AsyncMock(return_value=fake)
+    assert await entry.async_get_cloud(CloudSid.MICOAPI) is fake
+    entry.micoapi.ready.assert_awaited_once()
 
 
-async def test_get_cloud_micoapi_caches_terminal_none(entry, hass):
-    calls = {"from_token": 0}
-
-    async def _from_token(hass, cfg, login=None, **kw):
-        calls["from_token"] += 1
-        c = SimpleNamespace(
-            sid="micoapi",
-            async_check_micoapi_auth=AsyncMock(return_value=False),
-        )
-        c.hass_entry = entry
-        return c
-
-    with patch("custom_components.xiaomi_miot.core.hass_entry.MiotCloud.from_token", _from_token):
-        a = await entry.async_get_cloud(CloudSid.MICOAPI)
-        b = await entry.async_get_cloud(CloudSid.MICOAPI)
-    assert a is None
-    assert b is None
-    assert calls["from_token"] == 1
+async def test_get_cloud_micoapi_transient_failure_does_not_cache_none(entry, hass):
+    from custom_components.xiaomi_miot.core.micoapi import MicoApiError
+    fake = SimpleNamespace(sid="micoapi")
+    entry.micoapi.ready = AsyncMock(side_effect=[MicoApiError("account_retry"), fake])
+    assert await entry.async_get_cloud(CloudSid.MICOAPI) is None
+    assert CloudSid.MICOAPI not in entry.clouds
+    assert await entry.async_get_cloud(CloudSid.MICOAPI) is fake
 
 
 async def test_imic_com_has_no_micoapi_probe(entry, hass):
@@ -107,15 +90,9 @@ async def test_imic_com_has_no_micoapi_probe(entry, hass):
 
 
 async def test_get_cloud_string_sid_coerced(entry, hass):
-    fake = SimpleNamespace(sid="micoapi", async_check_micoapi_auth=AsyncMock(return_value=True))
-    fake.hass_entry = entry
-
-    async def _from_token(hass, cfg, login=None, **kw):
-        return fake
-
-    with patch("custom_components.xiaomi_miot.core.hass_entry.MiotCloud.from_token", _from_token):
-        cloud = await entry.async_get_cloud("micoapi")
-    assert cloud is fake
+    fake = SimpleNamespace(sid="micoapi")
+    entry.micoapi.ready = AsyncMock(return_value=fake)
+    assert await entry.async_get_cloud("micoapi") is fake
 
 
 async def test_cloud_property_returns_xiaomiio_slot(entry, hass):
@@ -144,15 +121,9 @@ async def test_get_cloud_login_false_skips_login(entry, hass):
 
 
 async def test_async_change_sid_delegates_to_async_get_cloud(entry, hass):
-    fake = SimpleNamespace(sid="micoapi", async_check_micoapi_auth=AsyncMock(return_value=True))
-    fake.hass_entry = entry
-
-    async def _from_token(hass, cfg, login=None, **kw):
-        return fake
-
-    with patch("custom_components.xiaomi_miot.core.hass_entry.MiotCloud.from_token", _from_token):
-        cloud = await entry.async_change_sid("micoapi")
-    assert cloud is fake
+    fake = SimpleNamespace(sid="micoapi")
+    entry.micoapi.ready = AsyncMock(return_value=fake)
+    assert await entry.async_change_sid("micoapi") is fake
 
 
 async def test_async_unload_clears_clouds_map(entry, hass):
@@ -175,7 +146,7 @@ async def test_async_unload_clears_clouds_map(entry, hass):
 async def test_auth_failed_xiaomiio_loaded_starts_reauth(entry, hass):
     captured = {}
 
-    async def _start_reauth(hass_arg, *, data):
+    def _start_reauth(hass_arg, *, data):
         captured["data"] = data
 
     entry.entry.async_start_reauth = _start_reauth
@@ -186,7 +157,7 @@ async def test_auth_failed_xiaomiio_loaded_starts_reauth(entry, hass):
 async def test_auth_failed_micoapi_loaded_starts_reauth(entry, hass):
     captured = {}
 
-    async def _start_reauth(hass_arg, *, data):
+    def _start_reauth(hass_arg, *, data):
         captured["data"] = data
 
     entry.entry.async_start_reauth = _start_reauth
@@ -197,7 +168,7 @@ async def test_auth_failed_micoapi_loaded_starts_reauth(entry, hass):
 async def test_auth_failed_string_sid_coerced(entry, hass):
     captured = {}
 
-    async def _start_reauth(hass_arg, *, data):
+    def _start_reauth(hass_arg, *, data):
         captured["data"] = data
 
     entry.entry.async_start_reauth = _start_reauth
@@ -208,7 +179,7 @@ async def test_auth_failed_string_sid_coerced(entry, hass):
 async def test_auth_failed_imicom_does_not_start(entry, hass):
     captured = {}
 
-    async def _start_reauth(*a, **k):
+    def _start_reauth(*a, **k):
         captured["called"] = True
 
     entry.entry.async_start_reauth = _start_reauth
@@ -220,7 +191,7 @@ async def test_auth_failed_setup_progress_only_micoapi(entry, hass):
     entry.entry.state = ConfigEntryState.SETUP_IN_PROGRESS
     captured = {}
 
-    async def _start_reauth(hass_arg, *, data):
+    def _start_reauth(hass_arg, *, data):
         captured.setdefault("calls", []).append(data)
 
     entry.entry.async_start_reauth = _start_reauth
@@ -245,7 +216,7 @@ async def test_auth_failed_setup_progress_xiaomiio_does_not_start(entry, hass):
     entry.entry.state = ConfigEntryState.SETUP_IN_PROGRESS
     captured = {}
 
-    async def _start_reauth(*a, **k):
+    def _start_reauth(*a, **k):
         captured["called"] = True
 
     entry.entry.async_start_reauth = _start_reauth

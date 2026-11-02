@@ -298,19 +298,20 @@ class Device(CustomConfigHelper):
 
     @property
     def hass_device_info(self):
-        via_device = None
-        if self._proxy_device:
-            via_device = next(iter(self._proxy_device.identifiers))
-        return {
+        info = {
             'identifiers': self.identifiers,
             'name': self.name,
             'model': self.model,
             'manufacturer': (self.model or 'Xiaomi').split('.', 1)[0],
             'sw_version': self.sw_version,
             'suggested_area': self.info.room_name,
-            'via_device': via_device,
             'configuration_url': f'https://home.miot-spec.com/s/{self.model}',
         }
+        if self._proxy_device:
+            parent = dr.async_get(self.hass).async_get_device(self._proxy_device.identifiers)
+            if parent:
+                info['via_device_id'] = parent.id
+        return info
 
     @property
     def customizes(self):
