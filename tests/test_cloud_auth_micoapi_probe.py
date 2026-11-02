@@ -274,3 +274,18 @@ async def test_probe_rejects_non_micoapi_sid(hass):
     from custom_components.xiaomi_miot.core.xiaomi_cloud import MiCloudException
     with pytest.raises(MiCloudException):
         await c.async_check_micoapi_auth()
+
+
+@pytest.mark.parametrize("code", [2, 3])
+async def test_http_200_with_auth_rejection_recovers_before_reporting_success(hass, code):
+    init_integration_data(hass)
+    c = _cloud(hass)
+    c.service_token = "fixture"
+    c._fake_resp = _FakeAioResp(200, payload={"code": code})
+    c.async_session = _make_async_session(c)
+    c.async_relogin = AsyncMock(side_effect=MiCloudAuthenticationError("fixture"))
+    cb = AsyncMock()
+    c.hass_entry = SimpleNamespace(async_auth_failed=cb)
+    assert await c.async_check_micoapi_auth() is False
+    c.async_relogin.assert_awaited_once()
+    cb.assert_awaited_once_with(CloudSid.MICOAPI)

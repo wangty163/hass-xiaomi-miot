@@ -1,15 +1,34 @@
 """Tests for resilient XiaoAI conversation polling."""
 import asyncio
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import requests
 
 from custom_components.xiaomi_miot.sensor import (
+    XiaoaiConversationSensor,
     XIAOAI_CONVERSATION_ATTEMPTS,
     _decode_xiaoai_conversation_data,
     _request_xiaoai_conversation,
 )
+from custom_components.xiaomi_miot.core.micoapi import MicoApiError
+from custom_components.xiaomi_miot.core.xiaomi_cloud import MiotCloud
+
+
+async def test_conversation_unavailable_during_recovery_then_available():
+    cloud = Mock(spec=MiotCloud)
+    cloud.async_request_api = AsyncMock(side_effect=[
+        MicoApiError("account_retry"), {"code": 0, "data": {"records": []}},
+    ])
+    entity = SimpleNamespace(
+        _parent=SimpleNamespace(xiaoai_cloud=cloud, xiaoai_device={"deviceID": "fixture"}),
+        _available=True, _attr_native_value=None, _state_attrs={}, conversation={},
+    )
+    assert await XiaoaiConversationSensor.fetch_latest_message(entity) == {}
+    assert entity._available is False
+    assert await XiaoaiConversationSensor.fetch_latest_message(entity) == {}
+    assert entity._available is True
 
 
 def test_none_conversation_data_is_an_empty_result():
